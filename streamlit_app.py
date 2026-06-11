@@ -1,10 +1,13 @@
 import streamlit as st
 import torch
+import torch.nn as nn
+import numpy as np
 import pickle
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-import pandas as pd
 import os
 import gdown
+import pandas as pd
+from collections import Counter
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
 st.set_page_config(
     page_title="Urdu Poetry Classifier",
@@ -13,91 +16,178 @@ st.set_page_config(
 )
 
 st.title("📜 Urdu Poetry Genre Classification")
-st.markdown("Classify your Urdu poetry into **Ghazal, Nazm, Qita, or Rubai**")
+st.markdown("Classify your Urdu poetry into **Ghazal, Nazm, Qita, or Rubai** using individual deep-learning components or a hybrid ensemble matrix.")
+
+# =====================================================================
+# 1. REQUIRED GRU CLASSES & FEATURE EXTRACTORS
+# =====================================================================
+
+class UrduWordTokenizer:
+    def __init__(self, max_vocab=10000, max_len=150):
+        self.max_vocab = max_vocab
+        self.max_len = max_len
+        self.word2idx = {'<PAD>': 0, '<UNK>': 1}
+
+    def encode(self, text):
+        ids = [self.word2idx.get(w, 1) for w in text.split()[:self.max_len]]
+        ids += [0] * (self.max_len - len(ids))
+        return ids
+
+class GRUAttentionStructural(nn.Module):
+    def __init__(self, vocab_size=10000, embed_dim=128, hidden_dim=256, num_classes=4, struct_dim=7, dropout=0.3):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
+        self.gru = nn.GRU(embed_dim, hidden_dim, batch_first=True, bidirectional=True, num_layers=2, dropout=dropout)
+        self.attention = nn.Linear(hidden_dim * 2, 1)
+        self.dropout = nn.Dropout(dropout)
+        self.struct_fc = nn.Sequential(nn.Linear(struct_dim, 32), nn.ReLU(), nn.Linear(32, 32))
+        self.classifier = nn.Sequential(nn.Linear(hidden_dim * 2 + 32, 128), nn.ReLU(), nn.Dropout(dropout), nn.Linear(128, num_classes))
+
+    def forward(self, x, struct):
+        x = self.dropout(self.embedding(x))
+        out, _ = self.gru(x)
+        weights = torch.softmax(self.attention(out), dim=1)
+        context = (weights * out).sum(dim=1)
+        struct_out = self.struct_fc(struct)
+        combined = torch.cat([context, struct_out], dim=1)
+        return self.classifier(combined)
+
+def extract_structural_features(text):
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    if not lines: return [0] * 7
+    line_count = len(lines)
+    word_counts = [len(l.split()) for l in lines]
+    avg_words_per_line = np.mean(word_counts) if lines else 0
+    std_words_per_line = np.std(word_counts) if lines else 0
+    last_words = [l.split()[-1] if l.split() else '' for l in lines]
+    last_3chars = [w[-3:] if len(w) >= 3 else w for w in last_words]
+    
+    even_endings = last_3chars[1::2]
+    even_rhyme_ratio = Counter(even_endings).most_common(1)[0][1] / len(even_endings) if even_endings else 0.0
+    all_most_common = Counter(last_3chars).most_common(1)[0][1] if last_3chars else 0
+    all_rhyme_ratio = all_most_common / len(last_3chars) if last_3chars else 0.0
+    even_last_words = last_words[1::2]
+    radif_ratio = Counter(even_last_words).most_common(1)[0][1] / len(even_last_words) if even_last_words else 0.0
+
+    return [
+        line_count / 40.0, avg_words_per_line / 15.0, std_words_per_line / 5.0,
+        even_rhyme_ratio, all_rhyme_ratio, radif_ratio, 1.0 if line_count == 4 else 0.0
+    ]
+
+# =====================================================================
+# 2. CACHED INFRASTRUCTURE RESOURCING (Downloads & Initializations)
+# =====================================================================
 
 @st.cache_resource
-def load_model():
+def load_all_models():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    # Download model if not exists
+    # [PASTE YOUR EXPLICIT FILE LINKS FROM GOOGLE DRIVE HERE]
     if not os.path.exists('urdubert_best.pt'):
-        st.info("⏳ Downloading model (first time only)...")
-        gdown.download('https://drive.google.com/uc?id=1lKeuGxDuEwfArJ9nKbYoutOwBhRtgdb0', 'urdubert_best.pt', quiet=False)
-    
+        st.info("⏳ Downloading UrduBERT Model weights...")
+        gdown.download('https://drive.google.com/uc?id=1NbAVL82t_1Vw5rwTsJlbUeV_JfgKZDdZ', 'urdubert_best.pt', quiet=False)
+        
+    if not os.path.exists('gru_structural_best.pt'):
+        st.info("⏳ Downloading BiGRU Structural Model weights...")
+        gdown.download('https://drive.google.com/uc?id=1yEXHr63lFo6iq8FI-wh386E_UkA4xiYo', 'gru_structural_best.pt', quiet=False)
+        
+    if not os.path.exists('gru_tokenizer.pkl'):
+        st.info("⏳ Downloading GRU custom tokenizer...")
+        gdown.download('https://drive.google.com/uc?id=15a-l8ajHQ39xP4I_HhFjGfTod2czYDxq', 'gru_tokenizer.pkl', quiet=False)
+        
     if not os.path.exists('label_encoder.pkl'):
-        st.info("⏳ Downloading label encoder...")
-        gdown.download('https://drive.google.com/uc?id=1pEtcMgPqj9_hJ3xu7gmHd4LpouZCI7It', 'label_encoder.pkl', quiet=False)
-    
+        st.info("⏳ Downloading metadata label map...")
+        gdown.download('https://drive.google.com/uc?id=1KgwhGugYHWKgrq0r_git90Dq4_VYBY-p', 'label_encoder.pkl', quiet=False)
+        
     if not os.path.exists('genre_info.pkl'):
-        st.info("⏳ Downloading genre info...")
-        gdown.download('https://drive.google.com/uc?id=1LZWHOYonAaqbU9HCa7Pt4ojOfBXxwmY4', 'genre_info.pkl', quiet=False)
+        st.info("⏳ Downloading metadata dictionary info...")
+        gdown.download('https://drive.google.com/uc?id=1yWzZstnuEqKodLR6Ta3utaeLdIWe9kgI', 'genre_info.pkl', quiet=False)
+
+    # ── Load Core Transformers Component ──
+    bert_tokenizer = AutoTokenizer.from_pretrained('urduhack/roberta-urdu-small')
+    bert_model = AutoModelForSequenceClassification.from_pretrained('urduhack/roberta-urdu-small', num_labels=4, ignore_mismatched_sizes=True)
+    bert_model.load_state_dict(torch.load('urdubert_best.pt', map_location=device))
+    bert_model.to(device).eval()
     
-    model = AutoModelForSequenceClassification.from_pretrained(
-        'urduhack/roberta-urdu-small',
-        num_labels=4,
-        ignore_mismatched_sizes=True
-    )
+    # ── Load Custom BiGRU Component ──
+    with open('gru_tokenizer.pkl', 'rb') as f:
+        gru_tokenizer = pickle.load(f)
+    gru_model = GRUAttentionStructural(num_classes=4)
+    gru_model.load_state_dict(torch.load('gru_structural_best.pt', map_location=device))
+    gru_model.to(device).eval()
     
-    model.load_state_dict(torch.load('urdubert_best.pt', map_location=device))
-    model = model.to(device)
-    model.eval()
-    
-    tokenizer = AutoTokenizer.from_pretrained('urduhack/roberta-urdu-small')
-    
+    # ── Pickles ──
     with open('label_encoder.pkl', 'rb') as f:
         le = pickle.load(f)
-    
     with open('genre_info.pkl', 'rb') as f:
         genre_info = pickle.load(f)
-    
-    return model, tokenizer, le, genre_info, device
+        
+    return device, le, genre_info, bert_model, bert_tokenizer, gru_model, gru_tokenizer
 
-model, tokenizer, le, GENRE_INFO, device = load_model()
+device, le, GENRE_INFO, bert_model, bert_tokenizer, gru_model, gru_tokenizer = load_all_models()
 
-# Sidebar
+# =====================================================================
+# 3. INTERFACE MANIPULATION LOGIC
+# =====================================================================
+
+# Model Selection Configuration Engine
+st.sidebar.title("🤖 Engine Configurations")
+model_choice = st.sidebar.selectbox(
+    "Select Target Model Architecture:",
+    ["UrduBERT (Transformer)", "BiGRU + Structural Features", "Ensemble Combo (Hybrid Strategy)"]
+)
+
+st.sidebar.markdown("---")
 st.sidebar.title("📚 About Genres")
 selected_genre = st.sidebar.radio("Learn about:", le.classes_)
 st.sidebar.markdown(f"**{selected_genre}**")
 st.sidebar.info(GENRE_INFO[selected_genre])
 
-# Main tabs
+# Helper to run internal execution conditional forks
+def execute_prediction(poem_raw_text):
+    struct_feats = extract_structural_features(poem_raw_text)
+    gru_probs, bert_probs = None, None
+    
+    with torch.no_grad():
+        if model_choice in ["BiGRU + Structural Features", "Ensemble Combo (Hybrid Strategy)"]:
+            encoded_gru = gru_tokenizer.encode(poem_raw_text)
+            t_x = torch.tensor([encoded_gru], dtype=torch.long).to(device)
+            t_sf = torch.tensor([struct_feats], dtype=torch.float).to(device)
+            gru_logits = gru_model(t_x, t_sf)
+            gru_probs = torch.softmax(gru_logits, dim=1).cpu().numpy()[0]
+            
+        if model_choice in ["UrduBERT (Transformer)", "Ensemble Combo (Hybrid Strategy)"]:
+            encoded_bert = bert_tokenizer(poem_raw_text, truncation=True, padding='max_length', max_length=256, return_tensors='pt')
+            b_ids = encoded_bert['input_ids'].to(device)
+            b_mask = encoded_bert['attention_mask'].to(device)
+            bert_logits = bert_model(input_ids=b_ids, attention_mask=b_mask).logits
+            bert_probs = torch.softmax(bert_logits, dim=1).cpu().numpy()[0]
+            
+    if model_choice == "UrduBERT (Transformer)":
+        return bert_probs
+    elif model_choice == "BiGRU + Structural Features":
+        return gru_probs
+    else:
+        return (gru_probs + bert_probs) / 2.0
+
+# Tabs Layout Matrix
 tab1, tab2, tab3 = st.tabs(["Single Poem", "Batch Upload", "About"])
 
 with tab1:
     st.subheader("🎯 Classify Your Poem")
-    
-    poem_text = st.text_area(
-        "Enter your Urdu poem:",
-        height=250,
-        placeholder="یہاں اپنی غزل، نظم یا رباعی لکھیں..."
-    )
+    poem_text = st.text_area("Enter your Urdu poem:", height=250, placeholder="یہاں اپنی غزل، نظم یا رباعی لکھیں...")
     
     if st.button("🔍 Classify Poem", type="primary", use_container_width=True):
         if poem_text.strip():
-            with st.spinner("Analyzing your poem..."):
+            with st.spinner("Analyzing structural forms and semantics..."):
                 try:
-                    enc = tokenizer(
-                        poem_text,
-                        truncation=True,
-                        padding='max_length',
-                        max_length=256,
-                        return_tensors='pt'
-                    )
-                    
-                    input_ids = enc['input_ids'].to(device)
-                    attention_mask = enc['attention_mask'].to(device)
-                    
-                    with torch.no_grad():
-                        outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-                        probs = torch.softmax(outputs.logits, dim=1).cpu().numpy()[0]
-                    
+                    probs = execute_prediction(poem_text)
                     predicted_idx = probs.argmax()
                     predicted_genre = le.classes_[predicted_idx]
                     confidence = float(probs[predicted_idx]) * 100
-                    
                     lines = [l for l in poem_text.split('\n') if l.strip()]
                     
-                    st.success(f"✅ Predicted Genre: **{predicted_genre}**")
+                    st.success(f"✅ Predicted Genre: **{predicted_genre}** _({model_choice} Engine)_")
                     
                     col1, col2, col3 = st.columns(3)
                     with col1:
@@ -107,105 +197,59 @@ with tab1:
                     with col3:
                         st.metric("Words", len(poem_text.split()))
                     
-                    st.subheader("Genre Scores")
-                    scores_df = pd.DataFrame({
-                        'Genre': le.classes_,
-                        'Confidence': probs * 100
-                    })
+                    st.subheader("Genre Scores Matrix")
+                    scores_df = pd.DataFrame({'Genre': le.classes_, 'Confidence': probs * 100})
                     st.bar_chart(scores_df.set_index('Genre'))
                     
-                    st.info(f"**{predicted_genre}**: {GENRE_INFO[predicted_genre]}")
-                    
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Execution Error Encountered: {e}")
         else:
-            st.warning("Please enter a poem!")
+            st.warning("Please enter a valid poem sequence first.")
 
 with tab2:
     st.subheader("📊 Batch Classification")
-    
     uploaded_file = st.file_uploader("Upload CSV (column: 'poem')", type='csv')
     
     if uploaded_file:
         df = pd.read_csv(uploaded_file)
-        
         if 'poem' not in df.columns:
-            st.error("CSV must have 'poem' column!")
+            st.error("CSV must contain a column named exactly 'poem'!")
         else:
-            if st.button("⚡ Classify All", type="primary", use_container_width=True):
-                with st.spinner(f"Processing {len(df)} poems..."):
+            if st.button("⚡ Classify All Rows", type="primary", use_container_width=True):
+                with st.spinner(f"Batch processing {len(df)} records..."):
                     results = []
                     progress_bar = st.progress(0)
                     
                     for idx, poem in enumerate(df['poem']):
-                        if not poem.strip():
-                            results.append({'Genre': 'Error', 'Confidence': 0})
+                        if not str(poem).strip() or pd.isna(poem):
+                            results.append({'Genre': 'Data Missing/Error', 'Confidence': "0.0%"})
                             continue
                         
-                        enc = tokenizer(
-                            poem,
-                            truncation=True,
-                            padding='max_length',
-                            max_length=256,
-                            return_tensors='pt'
-                        )
-                        
-                        input_ids = enc['input_ids'].to(device)
-                        attention_mask = enc['attention_mask'].to(device)
-                        
-                        with torch.no_grad():
-                            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-                            probs = torch.softmax(outputs.logits, dim=1).cpu().numpy()[0]
-                        
+                        probs = execute_prediction(str(poem))
                         results.append({
                             'Genre': le.classes_[probs.argmax()],
                             'Confidence': f"{probs.max()*100:.1f}%"
                         })
-                        
                         progress_bar.progress((idx + 1) / len(df))
                     
-                    result_df = pd.DataFrame(results)
+                    result_df = pd.concat([df, pd.DataFrame(results)], axis=1)
                     st.dataframe(result_df, use_container_width=True)
                     
-                    csv = result_df.to_csv(index=False)
-                    st.download_button(
-                        "📥 Download Results",
-                        csv,
-                        "classified_poems.csv",
-                        "text/csv",
-                        use_container_width=True
-                    )
+                    csv = result_df.to_csv(index=False).encode('utf-8')
+                    st.download_button("📥 Download Results", csv, "classified_poems.csv", "text/csv", use_container_width=True)
 
 with tab3:
     st.subheader("ℹ️ About This Project")
-    st.markdown('''
-    ### Urdu Poetry Genre Classifier
+    st.markdown(f'''
+    ### Multi-Engine Urdu Poetry Genre Classification Pipeline
     
-    This model classifies Urdu poetry into four main genres:
+    This app leverages text embeddings along with manual stylistic rule injection to evaluate patterns.
     
-    **📖 Genres:**
-    - **Ghazal**: Rhyming couplets with independent meaning
-    - **Nazm**: Structured narrative poetry
-    - **Qita**: Short poem on single subject
-    - **Rubai**: 4-line philosophical verse
-    
-    **🧠 Model:** UrduBERT (urduhack/roberta-urdu-small)
-    **📚 Training Data:** 10,000+ Urdu poems
-    **🎯 Accuracy:** ~92%
-    **👨‍💻 Built with:** PyTorch, Transformers, Streamlit
-    
-    ---
-    
-    **How to use:**
-    1. Enter your Urdu poem
-    2. Click "Classify Poem"
-    3. View predictions
-    
-    **For bulk classification:**
-    1. Upload CSV with 'poem' column
-    2. Click "Classify All"
-    3. Download results
+    **🧠 Active Engine:** `{model_choice}`
+    - **UrduBERT**: Optimized for lexical intent and emotional semantic profiles.
+    - **BiGRU + Structural Features**: Tracks verse-level boundaries, end-word rhyming weights (*Qafia*), and structural repeating strings (*Radif*).
+    - **Ensemble Combo**: Calculates dynamic probability soft-voting combinations between both neural graphs for stable boundary performance.
     ''')
 
 st.markdown("---")
-st.caption("🌍 Urdu Poetry Genre Classification | Made with ❤️")
+st.caption("🌍 Urdu Poetry Genre Classification Dashboard | Platform Complete")
