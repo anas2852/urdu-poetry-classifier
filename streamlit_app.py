@@ -89,15 +89,15 @@ def load_all_models():
         
     if not os.path.exists('gru_structural_best.pt'):
         st.info("⏳ Downloading BiGRU Structural Model weights...")
-        gdown.download('https://drive.google.com/uc?id=1yEXHr63lFo6iq8FI-wh386E_UkA4xiYo', 'gru_structural_best.pt', quiet=False)
+        gdown.download('https://drive.google.com/uc?id=1C4rs4OlxOUYpobPjKg3Nj1EcnJ5a_jkm', 'gru_structural_best.pt', quiet=False)
         
     if not os.path.exists('gru_tokenizer.pkl'):
         st.info("⏳ Downloading GRU custom tokenizer...")
-        gdown.download('https://drive.google.com/uc?id=15a-l8ajHQ39xP4I_HhFjGfTod2czYDxq', 'gru_tokenizer.pkl', quiet=False)
+        gdown.download('https://drive.google.com/uc?id=1AWfKNG2CdSAZFd4THQcKOu_m432K1klM', 'gru_tokenizer.pkl', quiet=False)
         
     if not os.path.exists('label_encoder.pkl'):
         st.info("⏳ Downloading metadata label map...")
-        gdown.download('https://drive.google.com/uc?id=1KgwhGugYHWKgrq0r_git90Dq4_VYBY-p', 'label_encoder.pkl', quiet=False)
+        gdown.download('https://drive.google.com/uc?id=1wT08vU7QU5A9luxGSwuzVMISvnKsAaSq', 'label_encoder.pkl', quiet=False)
         
     if not os.path.exists('genre_info.pkl'):
         st.info("⏳ Downloading metadata dictionary info...")
