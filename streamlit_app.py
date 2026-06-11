@@ -82,7 +82,6 @@ def extract_structural_features(text):
 def load_all_models():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    # [PASTE YOUR EXPLICIT FILE LINKS FROM GOOGLE DRIVE HERE]
     if not os.path.exists('urdubert_best.pt'):
         st.info("⏳ Downloading UrduBERT Model weights...")
         gdown.download('https://drive.google.com/uc?id=1NbAVL82t_1Vw5rwTsJlbUeV_JfgKZDdZ', 'urdubert_best.pt', quiet=False)
@@ -115,14 +114,10 @@ def load_all_models():
         
     gru_weights = torch.load('gru_structural_best.pt', map_location=device, weights_only=False)
 
-    # 🛡️ CASE 1: If you saved the entire model object directly
     if not isinstance(gru_weights, dict):
         gru_model = gru_weights
-    
-    # 🛡️ CASE 2: If it's a state_dict dictionary
     else:
         try:
-            # Dynamically look for the keys even if they have hidden prefixes
             emb_key = next(k for k in gru_weights.keys() if 'embedding.weight' in k)
             gru_key = next(k for k in gru_weights.keys() if 'gru.weight_ih_l0' in k)
             
@@ -130,7 +125,6 @@ def load_all_models():
             extracted_embed_dim = gru_weights[emb_key].shape[1]
             extracted_hidden_dim = gru_weights[gru_key].shape[0] // 3
         except StopIteration:
-            # Fallback to standard blueprint sizes if keys are completely missing
             extracted_vocab_size = 10000
             extracted_embed_dim = 128
             extracted_hidden_dim = 256
@@ -142,7 +136,6 @@ def load_all_models():
             num_classes=4
         )
         
-        # Strip any environment prefixes (like 'module.' or '_orig_mod.') before loading
         clean_weights = {}
         for k, v in gru_weights.items():
             new_key = k.split('embedding.')[-1] if 'embedding.' in k else k
@@ -154,7 +147,6 @@ def load_all_models():
 
     gru_model.to(device).eval()
     
-    # ── Pickles ──
     with open('label_encoder.pkl', 'rb') as f:
         le = pickle.load(f)
     with open('genre_info.pkl', 'rb') as f:
@@ -168,7 +160,6 @@ device, le, GENRE_INFO, bert_model, bert_tokenizer, gru_model, gru_tokenizer = l
 # 3. INTERFACE MANIPULATION LOGIC
 # =====================================================================
 
-# Model Selection Configuration Engine
 st.sidebar.title("🤖 Engine Configurations")
 model_choice = st.sidebar.selectbox(
     "Select Target Model Architecture:",
@@ -181,22 +172,19 @@ selected_genre = st.sidebar.radio("Learn about:", le.classes_)
 st.sidebar.markdown(f"**{selected_genre}**")
 st.sidebar.info(GENRE_INFO[selected_genre])
 
-# Helper to run internal execution conditional forks
-# Helper to run internal execution conditional forks
 def execute_prediction(poem_raw_text):
-    struct_feats = extract_structural_features(poem_raw_text)  # 👈 Defined here
+    struct_feats = extract_structural_features(poem_raw_text)
     gru_probs, bert_probs = None, None
     
     with torch.no_grad():
         if model_choice in ["BiGRU + Structural Features", "Ensemble Combo (Hybrid Strategy)"]:
             encoded_gru = gru_tokenizer.encode(poem_raw_text)
             
-            # 🛡️ SAFETY GUARD: Clamp out-of-bounds token indices to prevent engine crashes
             vocab_limit = gru_model.embedding.num_embeddings
             encoded_gru = [idx if idx < vocab_limit else 1 for idx in encoded_gru]
             
             t_x = torch.tensor([encoded_gru], dtype=torch.long).to(device)
-            t_sf = torch.tensor([struct_feats], dtype=torch.float).to(device)  # 👈 FIXED: Changed from struct_features to struct_feats
+            t_sf = torch.tensor([struct_feats], dtype=torch.float).to(device)
             gru_logits = gru_model(t_x, t_sf)
             gru_probs = torch.softmax(gru_logits, dim=1).cpu().numpy()[0]
             
@@ -212,7 +200,15 @@ def execute_prediction(poem_raw_text):
     elif model_choice == "BiGRU + Structural Features":
         return gru_probs
     else:
-        return (gru_probs + bert_probs) / 2.0
+        # ── 🎛️ DYNAMIC GATING MECHANISM INSIDE ENSEMBLE ENGINE ──
+        raw_lines = [line.strip() for line in poem_raw_text.split('\n') if line.strip()]
+        
+        if len(raw_lines) == 4:
+            # 4-Line Text structural routing matrix (Favors BiGRU's structural boundary checks)
+            return (0.20 * bert_probs) + (0.80 * gru_probs)
+        else:
+            # Traditional form routing matrix (Favors UrduBERT's high-efficiency semantics context)
+            return (0.90 * bert_probs) + (0.10 * gru_probs)
     
 # Tabs Layout Matrix
 tab1, tab2, tab3 = st.tabs(["Single Poem", "Batch Upload", "About"])
