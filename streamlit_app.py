@@ -112,8 +112,18 @@ def load_all_models():
     # ── Load Custom BiGRU Component ──
     with open('gru_tokenizer.pkl', 'rb') as f:
         gru_tokenizer = pickle.load(f)
-    gru_model = GRUAttentionStructural(num_classes=4)
-    gru_model.load_state_dict(torch.load('gru_structural_best.pt', map_location=device))
+    
+    # Explicitly pass the exact dimensions from your notebook code
+    gru_model = GRUAttentionStructural(
+        vocab_size=10000,
+        embed_dim=128,
+        hidden_dim=256,
+        num_classes=4
+    )
+    
+    # Load weights safely across varying environment version standards
+    gru_weights = torch.load('gru_structural_best.pt', map_location=device, weights_only=False)
+    gru_model.load_state_dict(gru_weights, strict=False)
     gru_model.to(device).eval()
     
     # ── Pickles ──
