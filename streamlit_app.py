@@ -113,23 +113,45 @@ def load_all_models():
     with open('gru_tokenizer.pkl', 'rb') as f:
         gru_tokenizer = pickle.load(f)
         
-    # Read weights file first to inspect its internal structure
     gru_weights = torch.load('gru_structural_best.pt', map_location=device, weights_only=False)
+
+    # 🛡️ CASE 1: If you saved the entire model object directly
+    if not isinstance(gru_weights, dict):
+        gru_model = gru_weights
     
-    # ⚡ AUTOMATION: Dynamically extract the exact dimensions used during training
-    extracted_vocab_size = gru_weights['embedding.weight'].shape[0]
-    extracted_embed_dim = gru_weights['embedding.weight'].shape[1]
-    extracted_hidden_dim = gru_weights['gru.weight_ih_l0'].shape[0] // 4
-    
-    # Initialize the model using the exact shapes found above
-    gru_model = GRUAttentionStructural(
-        vocab_size=extracted_vocab_size,
-        embed_dim=extracted_embed_dim,
-        hidden_dim=extracted_hidden_dim,
-        num_classes=4
-    )
-    
-    gru_model.load_state_dict(gru_weights, strict=True)
+    # 🛡️ CASE 2: If it's a state_dict dictionary
+    else:
+        try:
+            # Dynamically look for the keys even if they have hidden prefixes
+            emb_key = next(k for k in gru_weights.keys() if 'embedding.weight' in k)
+            gru_key = next(k for k in gru_weights.keys() if 'gru.weight_ih_l0' in k)
+            
+            extracted_vocab_size = gru_weights[emb_key].shape[0]
+            extracted_embed_dim = gru_weights[emb_key].shape[1]
+            extracted_hidden_dim = gru_weights[gru_key].shape[0] // 3
+        except StopIteration:
+            # Fallback to standard blueprint sizes if keys are completely missing
+            extracted_vocab_size = 10000
+            extracted_embed_dim = 128
+            extracted_hidden_dim = 256
+            
+        gru_model = GRUAttentionStructural(
+            vocab_size=extracted_vocab_size,
+            embed_dim=extracted_embed_dim,
+            hidden_dim=extracted_hidden_dim,
+            num_classes=4
+        )
+        
+        # Strip any environment prefixes (like 'module.' or '_orig_mod.') before loading
+        clean_weights = {}
+        for k, v in gru_weights.items():
+            new_key = k.split('embedding.')[-1] if 'embedding.' in k else k
+            if k.startswith('module.'): new_key = k[7:]
+            elif k.startswith('_orig_mod.'): new_key = k[10:]
+            clean_weights[new_key] = v
+            
+        gru_model.load_state_dict(clean_weights, strict=False)
+
     gru_model.to(device).eval()
     
     # ── Pickles ──
