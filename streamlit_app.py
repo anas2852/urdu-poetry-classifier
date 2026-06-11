@@ -112,18 +112,24 @@ def load_all_models():
     # ── Load Custom BiGRU Component ──
     with open('gru_tokenizer.pkl', 'rb') as f:
         gru_tokenizer = pickle.load(f)
+        
+    # Read weights file first to inspect its internal structure
+    gru_weights = torch.load('gru_structural_best.pt', map_location=device, weights_only=False)
     
-    # Explicitly pass the exact dimensions from your notebook code
+    # ⚡ AUTOMATION: Dynamically extract the exact dimensions used during training
+    extracted_vocab_size = gru_weights['embedding.weight'].shape[0]
+    extracted_embed_dim = gru_weights['embedding.weight'].shape[1]
+    extracted_hidden_dim = gru_weights['gru.weight_ih_l0'].shape[0] // 4
+    
+    # Initialize the model using the exact shapes found above
     gru_model = GRUAttentionStructural(
-        vocab_size=10000,
-        embed_dim=128,
-        hidden_dim=256,
+        vocab_size=extracted_vocab_size,
+        embed_dim=extracted_embed_dim,
+        hidden_dim=extracted_hidden_dim,
         num_classes=4
     )
     
-    # Load weights safely across varying environment version standards
-    gru_weights = torch.load('gru_structural_best.pt', map_location=device, weights_only=False)
-    gru_model.load_state_dict(gru_weights, strict=False)
+    gru_model.load_state_dict(gru_weights, strict=True)
     gru_model.to(device).eval()
     
     # ── Pickles ──
@@ -161,8 +167,13 @@ def execute_prediction(poem_raw_text):
     with torch.no_grad():
         if model_choice in ["BiGRU + Structural Features", "Ensemble Combo (Hybrid Strategy)"]:
             encoded_gru = gru_tokenizer.encode(poem_raw_text)
+            
+            # 🛡️ SAFETY GUARD: Clamp out-of-bounds token indices to prevent engine crashes
+            vocab_limit = gru_model.embedding.num_embeddings
+            encoded_gru = [idx if idx < vocab_limit else 1 for idx in encoded_gru]
+            
             t_x = torch.tensor([encoded_gru], dtype=torch.long).to(device)
-            t_sf = torch.tensor([struct_feats], dtype=torch.float).to(device)
+            t_sf = torch.tensor([struct_features], dtype=torch.float).to(device)
             gru_logits = gru_model(t_x, t_sf)
             gru_probs = torch.softmax(gru_logits, dim=1).cpu().numpy()[0]
             
