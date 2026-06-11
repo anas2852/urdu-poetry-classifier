@@ -182,8 +182,9 @@ st.sidebar.markdown(f"**{selected_genre}**")
 st.sidebar.info(GENRE_INFO[selected_genre])
 
 # Helper to run internal execution conditional forks
+# Helper to run internal execution conditional forks
 def execute_prediction(poem_raw_text):
-    struct_feats = extract_structural_features(poem_raw_text)
+    struct_feats = extract_structural_features(poem_raw_text)  # 👈 Defined here
     gru_probs, bert_probs = None, None
     
     with torch.no_grad():
@@ -195,7 +196,7 @@ def execute_prediction(poem_raw_text):
             encoded_gru = [idx if idx < vocab_limit else 1 for idx in encoded_gru]
             
             t_x = torch.tensor([encoded_gru], dtype=torch.long).to(device)
-            t_sf = torch.tensor([struct_features], dtype=torch.float).to(device)
+            t_sf = torch.tensor([struct_feats], dtype=torch.float).to(device)  # 👈 FIXED: Changed from struct_features to struct_feats
             gru_logits = gru_model(t_x, t_sf)
             gru_probs = torch.softmax(gru_logits, dim=1).cpu().numpy()[0]
             
@@ -212,7 +213,7 @@ def execute_prediction(poem_raw_text):
         return gru_probs
     else:
         return (gru_probs + bert_probs) / 2.0
-
+    
 # Tabs Layout Matrix
 tab1, tab2, tab3 = st.tabs(["Single Poem", "Batch Upload", "About"])
 
